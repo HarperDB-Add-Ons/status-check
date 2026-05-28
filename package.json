@@ -1,7 +1,7 @@
 {
   "name": "@harperdb/status-check",
   "type": "module",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "A Harper component for checking the status of the HarperDB instance.",
   "license": "Apache-2.0"
 }
