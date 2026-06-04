@@ -3,10 +3,12 @@ const DEFAULT_200_MSG = "Status endpoint is reporting for duty.";
 const DEFAULT_404_MSG = "Status endpoint is reporting downtime.";
 
 if (server.workerIndex == 0) {
-  let record = await hdb_status.get(1);
-  if (!record) {
-    await hdb_status.put({ id: 1, status: 200, message: DEFAULT_200_MSG });
-  }
+  (async () => {
+    let record = await hdb_status.get(1);
+    if (!record) {
+      await hdb_status.put({ id: 1, status: 200, message: DEFAULT_200_MSG });
+    }
+  })();
 }
 
 export class status extends Resource {
