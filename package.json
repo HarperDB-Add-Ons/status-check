@@ -2,6 +2,15 @@
   "name": "@harperdb/status-check",
   "type": "module",
   "version": "1.0.3",
-  "description": "A Harper component for checking the status of the HarperDB instance.",
-  "license": "Apache-2.0"
+  "description": "A Harper component for checking the status of the Harper instance.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "test:integration": "harper-integration-test-run \"integrationTests/**/*.test.ts\""
+  },
+  "devDependencies": {
+    "@harperfast/integration-testing": "^0.4.0",
+    "@types/node": "^25.9.2",
+    "harper": "^5.0.28",
+    "typescript": "^6.0.3"
+  }
 }
