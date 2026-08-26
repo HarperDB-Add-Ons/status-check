@@ -18,7 +18,7 @@ export class status extends Resource {
   async get() {
     let record = await hdb_status.get(1);
     if (!record?.status) {
-      //returning undefined will cause HDB to return status of 404
+      //returning undefined will cause Harper to return status of 404
       return;
     }
 
