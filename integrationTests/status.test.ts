@@ -1,31 +1,102 @@
-import { suite, test, before, after } from 'node:test';
+import { suite, test, before, after, type SuiteContext } from 'node:test';
 import { strictEqual, ok } from 'node:assert/strict';
 import { setupHarperWithFixture, teardownHarper, type ContextWithHarper } from '@harperfast/integration-testing';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { cp, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const FIXTURE_PATH = resolve(__dirname, '..');
-
-// harper's `exports` only exposes ".", so 'harper/dist/bin/harper.js' is not resolvable.
-// Resolve the CLI from the (exported) main entry and pass it explicitly.
+const REPO_ROOT = resolve(__dirname, '..');
 const require = createRequire(import.meta.url);
-const harperBinPath = resolve(dirname(require.resolve('harper')), 'bin/harper.js');
+
+// The files Harper actually needs to load this component, per config.yaml.
+// Everything else in the repo root — most importantly node_modules — is
+// deliberately excluded; see stageFixture() below.
+const COMPONENT_FILES = ['config.yaml', 'resources.js', 'schema.graphql', 'package.json'];
+
+/**
+ * Locate harper's CLI without assuming its internal layout.
+ *
+ * harper's `exports` map declares only ".", so neither `harper/package.json`
+ * nor `harper/dist/bin/harper.js` is resolvable — both fail with
+ * ERR_PACKAGE_PATH_NOT_EXPORTED. So we resolve the main entry, walk up to the
+ * package root, and read the CLI path out of harper's own `bin` field. That
+ * survives the main entry moving anywhere inside the package, and fails with a
+ * named error instead of a cryptic ENOENT if the package shape ever changes.
+ */
+function resolveHarperBinPath(): string {
+    let dir = dirname(require.resolve('harper'));
+    for (let i = 0; i < 10; i++) {
+        const pkgPath = join(dir, 'package.json');
+        if (existsSync(pkgPath)) {
+            const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as {
+                name?: string;
+                bin?: string | Record<string, string>;
+            };
+            if (pkg.name === 'harper') {
+                const bin = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.harper;
+                if (!bin) throw new Error("harper's package.json declares no `bin.harper` entry");
+                return resolve(dir, bin);
+            }
+        }
+        const parent = dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+    }
+    throw new Error("could not locate the harper package root from require.resolve('harper')");
+}
+
+const harperBinPath = resolveHarperBinPath();
+
+/**
+ * Copy just the component's own files into a scratch directory and return it.
+ *
+ * setupHarperWithFixture() does a filter-less `cp(fixturePath, ..., { recursive: true })`
+ * (@harperfast/integration-testing 0.4.0 exposes no filter option), so pointing it at the
+ * repo root would copy the entire node_modules tree — thousands of files, none of which
+ * Harper reads — into {dataRootDir}/components/ on every run, on every Node version.
+ * The staged directory keeps its `status-check` basename because that basename becomes
+ * the installed component's directory name.
+ */
+async function stageFixture(): Promise<{ fixturePath: string; cleanup: () => Promise<void> }> {
+    const staging = await mkdtemp(join(tmpdir(), 'status-check-fixture-'));
+    const fixturePath = join(staging, 'status-check');
+    await mkdir(fixturePath);
+    await Promise.all(
+        COMPONENT_FILES.map((file) => cp(join(REPO_ROOT, file), join(fixturePath, file)))
+    );
+    return { fixturePath, cleanup: () => rm(staging, { recursive: true, force: true }) };
+}
 
 function authFetch(ctx: ContextWithHarper, path: string, init: RequestInit & { headers?: Record<string, string> } = {}) {
     const { headers = {}, ...rest } = init;
     const creds = Buffer.from(`${ctx.harper.admin.username}:${ctx.harper.admin.password}`).toString('base64');
-    return fetch(`${ctx.harper.httpURL}${path}`, { ...rest, headers: { Authorization: `Basic ${creds}`, ...headers } });
+    // Caller headers are spread FIRST so the computed Basic credential always wins:
+    // this helper exists to authenticate as the admin, and a caller-supplied
+    // Authorization key silently displacing it would be a confusing 401.
+    return fetch(`${ctx.harper.httpURL}${path}`, { ...rest, headers: { ...headers, Authorization: `Basic ${creds}` } });
 }
 
-void suite('status-check component', (ctx: ContextWithHarper) => {
+// `suite()` passes a SuiteContext, not a ContextWithHarper, and at registration time
+// nothing has populated `harper` yet. Use a standalone container that `before()` fills
+// in and the tests close over, rather than mistyping the callback argument.
+const ctx = { name: 'status-check component' } as ContextWithHarper;
+
+void suite('status-check component', (_suiteCtx: SuiteContext) => {
+    let cleanupFixture: () => Promise<void>;
+
     before(async () => {
-        await setupHarperWithFixture(ctx, FIXTURE_PATH, { harperBinPath });
+        const staged = await stageFixture();
+        cleanupFixture = staged.cleanup;
+        await setupHarperWithFixture(ctx, staged.fixturePath, { harperBinPath });
     });
 
     after(async () => {
         await teardownHarper(ctx);
+        await cleanupFixture?.();
     });
 
     void test('GET /status returns 200 and a message by default', async () => {
